@@ -1,0 +1,465 @@
+#define _CRT_SECURE_NO_WARNINGS
+
+#include <iostream>
+#include <fstream>
+#include <sstream>
+#include <string>
+#include <cstring>
+#include <cstdlib>
+#include <ctime>
+#include <iomanip>
+
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <unistd.h>
+#endif
+
+using namespace std;
+
+// ============ Constants ======================
+#define MAX_CANDIDATES 10
+#define MAX_SEATS_NA 10
+#define MAX_SEATS_PA 4
+#define MAX_VOTERS 100
+#define MAX_VOTERS_PER_SEAT 10
+#define MAX_FILENAME 50
+#define MAX_PROVINCE_CODE_LENGTH 2
+#define NUM_ADMINS 5
+#define MAX_SENATE_CANDIDATES 15
+
+// ============ Color Codes ====================
+#define GREEN  "\033[1;32m"
+#define RED    "\033[1;31m"
+#define CYAN   "\033[1;36m"
+#define MAGENTA "\033[1;35m"
+#define YELLOW "\033[1;33m"
+#define RESET  "\033[0m"
+
+// ============ Admin Credentials ============
+struct AdminAccount {
+    char id[10];
+    char password[10];
+};
+
+AdminAccount admins[NUM_ADMINS] = {
+    {"ecp001", "pass001"},
+    {"ecp002", "pass002"},
+    {"ecp003", "pass003"},
+    {"ecp004", "pass004"},
+    {"ecp005", "pass005"}
+};
+
+
+// ============ Clear Terminal ================
+void clearScreen() {
+#ifdef _WIN32
+    system("cls");
+#else
+    system("clear");
+#endif
+}
+
+// ============ Helper: Split String ===============
+int split(const string& str, char delimiter, char parts[][50], int maxParts) {
+    int count = 0;
+    string temp = "";
+    for (int i = 0; i < str.length(); i++) {
+        if (str[i] == delimiter) {
+            if (count < maxParts) {
+                strcpy(parts[count++], temp.c_str());
+                temp = "";
+            }
+        } else {
+            temp += str[i];
+        }
+    }
+    if (count < maxParts) {
+        strcpy(parts[count++], temp.c_str());
+    }
+    return count;
+}
+
+// ================= User Base Class =====================
+class User {
+protected:
+    char voterID[20];
+    char password[20];
+
+public:
+    User() {
+        strcpy(voterID, "");
+        strcpy(password, "");
+    }
+
+    User(const char* id, const char* pwd) {
+        strcpy(voterID, id);
+        strcpy(password, pwd);
+    }
+
+    const char* getID() const { return voterID; }
+
+    virtual void displayMenu() = 0;
+
+    static bool authenticateAdmin(const char* id, const char* pwd) {
+        for (int i = 0; i < NUM_ADMINS; ++i) {
+            if (strcmp(id, admins[i].id) == 0 && strcmp(pwd, admins[i].password) == 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    static bool authenticateVoter(const char* id, const char* pwd, char* gender) {
+        ifstream inFile("voters.txt");
+        string line;
+        char parts[6][50];
+        while (getline(inFile, line)) {
+            if (split(line, ':', parts, 6) == 6) {
+                if (strcmp(parts[0], id) == 0 && strcmp(parts[1], pwd) == 0) {
+                    strcpy(gender, parts[5]);
+                    inFile.close();
+                    return true;
+                }
+            }
+        }
+        inFile.close();
+        return false;
+    }
+
+    static bool isValidVoterID(const char* id) {
+        char parts[4][50];
+        if (split(id, '-', parts, 4) != 4) return false;
+        if (strlen(parts[0]) < 2 || strlen(parts[1]) < 3 || strlen(parts[2]) < 2 || strlen(parts[3]) < 2) return false;
+        return true;
+    }
+
+    static bool isValidPassword(const char* password) {
+        return strlen(password) >= 6;
+    }
+};
+
+// =============== Admin Class ==========================
+class Admin : public User {
+public:
+    Admin(const char* id, const char* pwd) : User(id, pwd) {}
+
+    void displayMenu() override;
+    void addCandidate();
+    void removeCandidate();
+    void startElection();
+    void endElection();
+    void viewResults();
+    void viewAssemblyResults(const char* assemblyName, const char* filename);
+    void viewVoters();
+};
+
+// =============== Register New Voter ========================
+void registerVoter() {
+    char id[20], pass[20];
+    clearScreen();
+    cout << GREEN << "======= Register Voter =======\n" << RESET;
+    cout << CYAN << "Enter New Voter ID (e.g., na-001-pb-01): " << RESET;
+    cin >> id;
+
+    ifstream check("voters.txt");
+    string line;
+    char parts[6][50];
+    while (getline(check, line)) {
+        if (split(line, ':', parts, 6) >= 1 && strcmp(parts[0], id) == 0) {
+            cout << RED << "Voter ID already registered.\n" << RESET;
+            check.close();
+            system("pause");
+            return;
+        }
+    }
+    check.close();
+    cout << CYAN << "Enter Password (minimum 6 characters): " << RESET;
+    cin >> pass;
+    if (strlen(pass) < 6) {
+        cout << RED << "Password must be at least 6 characters long.\n" << RESET;
+        system("pause");
+        return;
+    }
+
+    srand(static_cast<unsigned int>(time(0)));
+    char gender[2];
+    strcpy(gender, (rand() % 2 == 0) ? "M" : "F");
+    ofstream out("voters.txt", ios::app);
+    if (out.is_open()) {
+        out << id << ":" << pass << ":0:0:0:" << gender << "\n";
+        cout << GREEN << "Voter registered successfully!\n" << RESET;
+        out.close();
+    } else {
+        cout << RED << "Error opening voters.txt for writing.\n" << RESET;
+    }
+    system("pause");
+}
+
+
+
+
+// =============== Admin Class Functions ====================
+void Admin::displayMenu() {
+    char choice;
+    do {
+        clearScreen();
+        cout << GREEN << "========= Admin Menu ==========\n" << RESET;
+        cout << CYAN << "1. Add Candidate (NA/PA)\n";
+        cout << "2. Remove Candidate (NA/PA)\n";
+        cout << "3. Start Election (NA/PA/Senate)\n";
+        cout << "4. End Election (NA/PA/Senate)\n";
+        cout << "5. View Results (NA/PA/Senate)\n";
+        cout << "6. View Voter Database\n";
+        cout << "7. Exit Admin Menu\n" << RESET;
+        cout << MAGENTA << "Enter choice: " << RESET;
+        cin >> choice;
+        if (cin.fail()) {
+            cout << RED << "Invalid input. Please enter a number.\n" << RESET;
+            cin.clear();
+            cin.ignore(100, '\n');
+            system("pause");
+            continue;
+        }
+
+        switch (choice) {
+        case '1':
+            addCandidate();
+            system("pause");
+            break;
+        case '2':
+            removeCandidate();
+            system("pause");
+            break;
+        case '3':
+            startElection();
+            system("pause");
+            break;
+        case '4':
+            endElection();
+            system("pause");
+            break;
+        case '5':
+            viewResults();
+            system("pause");
+            break;
+        case '6':
+            viewVoters();
+            system("pause");
+            break;
+        case '7':
+            cout << GREEN << "Exiting Admin Menu...\n" << RESET;
+            break;
+        default:
+            cout << RED << "Invalid choice.\n" << RESET;
+            system("pause");
+        }
+    } while (choice != '7');
+}
+
+void Admin::addCandidate() {
+    clearScreen();
+    cout << CYAN << "======= Add Candidate =======\n" << RESET;
+    cout << "Enter assembly (na/pa): ";
+    char assemblyType[3];
+    cin >> assemblyType;
+    if (strcmp(assemblyType, "na") != 0 && strcmp(assemblyType, "pa") != 0) {
+        cout << RED << "Invalid assembly type.\n" << RESET;
+        return;
+    }
+    cout << "Enter seat code (e.g., na-001-pb-01, pp-002-sd-05): ";
+    char seatCode[15];
+    cin >> seatCode;
+    cout << "Enter party name: ";
+    char party[20];
+    cin >> party;
+
+    char filename[MAX_FILENAME];
+    if (strncmp(seatCode, "na-", 3) == 0)
+        strcpy(filename, "na.txt");
+    else if (strncmp(seatCode, "pb-", 3) == 0)
+        strcpy(filename, "pb.txt");
+    else if (strncmp(seatCode, "ps-", 3) == 0)
+        strcpy(filename, "ps.txt");
+    else if (strncmp(seatCode, "pk-", 3) == 0)
+        strcpy(filename, "pk.txt");
+    else if (strncmp(seatCode, "pp-", 3) == 0)
+        strcpy(filename, "pp.txt");
+    else if (strncmp(seatCode, "pg-", 3) == 0)
+        strcpy(filename, "pg.txt");
+    else {
+        cout << RED << "Invalid seat code format.\n" << RESET;
+        return;
+    }
+    Candidate newCandidate(seatCode, party);
+    newCandidate.saveToFile(filename);
+    cout << GREEN << "Candidate added successfully to " << filename << ".\n" << RESET;
+}
+
+void Admin::removeCandidate() {
+    clearScreen();
+    cout << CYAN << "====== Remove Candidate ======\n" << RESET;
+    cout << "Enter assembly (na/pa): ";
+    char assemblyType[3];
+    cin >> assemblyType;
+    if (strcmp(assemblyType, "na") != 0 && strcmp(assemblyType, "pa") != 0) {
+        cout << RED << "Invalid assembly type.\n" << RESET;
+        return;
+    }
+    cout << "Enter seat code of candidate to remove (e.g., na-001-pb-01): ";
+    char seatCode[15];
+    cin >> seatCode;
+    cout << "Enter party of candidate to remove: ";
+    char party[20];
+    cin >> party;
+    char filename[MAX_FILENAME];
+    if (strncmp(seatCode, "na-", 3) == 0)
+        strcpy(filename, "na.txt");
+    else if (strncmp(seatCode, "pb-", 3) == 0)
+        strcpy(filename, "pb.txt");
+    else if (strncmp(seatCode, "ps-", 3) == 0)
+        strcpy(filename, "ps.txt");
+    else if (strncmp(seatCode, "pk-", 3) == 0)
+        strcpy(filename, "pk.txt");
+    else if (strncmp(seatCode, "pp-", 3) == 0)
+        strcpy(filename, "pp.txt");
+    else if (strncmp(seatCode, "pg-", 3) == 0)
+        strcpy(filename, "pg.txt");
+    else {
+        cout << RED << "Invalid seat code format.\n" << RESET;
+        return;
+    }
+
+    if (Candidate::removeCandidateFromFile(filename, seatCode, party)) {
+        cout << GREEN << "Candidate removal process initiated.\n" << RESET;
+    } else {
+        cout << RED << "Candidate not found or error occurred.\n" << RESET;
+    }
+}
+
+void Admin::startElection() {
+    clearScreen();
+    cout << CYAN << "======= Start Election =======\n" << RESET;
+    cout << "Enter assembly to start (na/pa/senate): ";
+    char assemblyType[10];
+    cin >> assemblyType;
+    if (strcmp(assemblyType, "na") == 0)
+        electionStatus.naStarted = true;
+    else if (strcmp(assemblyType, "pa") == 0)
+        electionStatus.paStarted = true;
+    else if (strcmp(assemblyType, "senate") == 0)
+        electionStatus.senateStarted = true;
+    else {
+        cout << RED << "Invalid assembly type.\n" << RESET;
+        return;
+    }
+    cout << GREEN << assemblyType << " election has started.\n" << RESET;
+}
+
+void Admin::endElection() {
+    clearScreen();
+    cout << CYAN << "======== End Election ========\n" << RESET;
+    cout << "Enter assembly to end (na/pa/senate): ";
+    char assemblyType[10];
+    cin >> assemblyType;
+    if (strcmp(assemblyType, "na") == 0)
+        electionStatus.naEnded = true;
+    else if (strcmp(assemblyType, "pa") == 0)
+        electionStatus.paEnded = true;
+    else if (strcmp(assemblyType, "senate") == 0)
+        electionStatus.senateEnded = true;
+    else {
+        cout << RED << "Invalid assembly type.\n" << RESET;
+        return;
+    }
+    cout << YELLOW << assemblyType << " election has ended.\n" << RESET;
+}
+
+void Admin::viewResults() {
+    clearScreen();
+    cout << CYAN << "========= Election Results ==========\n" << RESET;
+    viewAssemblyResults("National Assembly", "votes_na.txt");
+    viewAssemblyResults("Provincial Assembly", "votes_pa.txt");
+    viewAssemblyResults("Senate", "votes_senate.txt");
+}
+
+void Admin::viewAssemblyResults(const char* assemblyName, const char* filename) {
+    cout << MAGENTA << "--- " << assemblyName << " Results ---\n" << RESET;
+    ifstream inFile(filename);
+    string line;
+    struct VoteCount {
+        char party[50];
+        char candidate[50]; // For Senate
+        int count;
+    };
+    VoteCount counts[MAX_CANDIDATES * 2 + MAX_SENATE_CANDIDATES];
+    int countIndex = 0;
+    char parts[2][50];
+    bool found;
+    while (getline(inFile, line)) {
+        if (split(line, ':', parts, 2) == 2) {
+            found = false;
+            for (int i = 0; i < countIndex; ++i) {
+                if (strcmp(assemblyName, "Senate") == 0) {
+                    if (strcmp(counts[i].candidate, parts[1]) == 0) {
+                        counts[i].count++;
+                        found = true;
+                        break;
+                    }
+                }
+                else {
+                    if (strcmp(counts[i].party, parts[1]) == 0) {
+                        counts[i].count++;
+                        found = true;
+                        break;
+                    }
+                }
+            }
+            if (!found) {
+                if (strcmp(assemblyName, "Senate") == 0) {
+                    strcpy(counts[countIndex].candidate, parts[1]);
+                    counts[countIndex].count = 1;
+                }
+                else {
+                    strcpy(counts[countIndex].party, parts[1]);
+                    counts[countIndex].count = 1;
+                }
+                countIndex++;
+            }
+        }
+    }
+    inFile.close();
+    if (countIndex == 0) {
+        cout << YELLOW << "No votes recorded yet for " << assemblyName << ".\n" << RESET;
+        return;
+    }
+
+    for (int i = 0; i < countIndex; ++i) {
+        if (strcmp(assemblyName, "Senate") == 0) {
+            cout << counts[i].candidate << ": " << counts[i].count << " votes\n";
+        }
+        else {
+            cout << counts[i].party << ": " << counts[i].count << " votes\n";
+        }
+    }
+}
+
+void Admin::viewVoters() {
+    clearScreen();
+    cout << CYAN << "======= Registered Voters =======\n" << RESET;
+    ifstream inFile("voters.txt");
+    string line;
+    int count = 0;
+    char parts[6][50];
+    while (getline(inFile, line)) {
+        if (split(line, ':', parts, 6) == 6) {
+            cout << ++count << ". Voter ID: " << parts[0] << ", Gender: " << parts[5] << endl;
+        }
+        else {
+            cout << RED << "Error reading voter data.\n" << RESET;
+            break;
+        }
+    }
+    inFile.close();
+}
+
